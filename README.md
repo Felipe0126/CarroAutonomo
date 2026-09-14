@@ -13,25 +13,6 @@ datos en tiempo real.
 **Director:** Jorge Eduardo Porras Bohada
 **Modalidad:** Monografía
 
----
-
-## Estado del proyecto
-
-| Subsistema | Estado |
-|---|---|
-| Percepción (LiDAR, IMU, encoders, ultrasonidos) | Funcional |
-| Firmware embebido ESP32 | Funcional |
-| Puente serie ESP32 ↔ ROS 2 | Funcional |
-| Fusión sensorial (EKF) | Funcional |
-| SLAM y construcción de mapas | Funcional |
-| Aplicación web y base de datos | Funcional (independiente) |
-| Integración robot ↔ base de datos | En desarrollo |
-| Mecanismo de almacenamiento y despacho | En desarrollo |
-| Planificación y navegación autónoma punto a punto | Pendiente |
-| Control de velocidad en lazo cerrado | Deshabilitado (ver limitaciones) |
-
----
-
 ## Arquitectura general
 
 El sistema se organiza en tres bloques independientes que se comunican entre sí:
@@ -397,103 +378,6 @@ npm run dev
 Configurar en los archivos `.env` la cadena de conexión a MySQL, la `SECRET_KEY` de
 firma de tokens, los orígenes permitidos por CORS y la URL base de la API. **Los `.env`
 no deben versionarse.**
-
----
-
-## 7. Limitaciones conocidas
-
-| Limitación | Impacto | Mitigación |
-|---|---|---|
-| Encoders monocanal | No hay información de sentido de giro; sensibles al rebote | Antirrebote de 15 ms; lazo cerrado deshabilitado; odometría solo como entrada del EKF |
-| Asimetría entre costados | `IZQ=16.1` vs `DER=28.1`; el robot deriva en recta | Yaw rate tomado íntegro de la IMU |
-| Deslizamiento lateral | 4 ruedas fijas obligan a deslizar en los giros | No se usa la odometría diferencial para el giro |
-| Sin referencia absoluta de orientación | El yaw deriva a largo plazo | Brújula magnética prevista, no integrada aún |
-| LiDAR 2D | No ve obstáculos fuera del plano de barrido | Ultrasonidos como capa complementaria |
-| Ethernet dañado en la Pi | El PHY vive pero reporta `Link detected: no` | WiFi como único camino de red |
-| RDP de GNOME sin monitor | Requiere salida de vídeo activa | Dummy plug HDMI |
-| VNC + XFCE headless | Falla con `cannot open display: wayland-0` por la sesión GNOME concurrente | Sin resolver |
-| Planta cuadrada | La envolvente al girar depende de la orientación | Declarar la huella como polígono, no como radio único |
-
----
-
-## 8. Gotchas — errores que ya costaron tiempo
-
-### Firmware
-
-- **Antirrebote inicializado en cero.** `ticks_diff(now, 0)` devuelve un valor negativo
-  grande y desactiva el filtro permanentemente. Inicializar con `time.ticks_us()`.
-- **`dt` con el reloj de la Pi.** Cuando las tramas llegan en ráfaga da `dt = 0`. Usar
-  el campo `t_ms` que envía el ESP32.
-
-### ROS 2
-
-- **`readline()` bloqueante en un hilo** muere en silencio si se comprueba `rclpy.ok()`
-  antes de que ROS termine de inicializar. Usar un timer con lecturas no bloqueantes
-  basadas en `in_waiting`.
-- **`slam_toolbox` en Jazzy es un `LifecycleNode`.** Sin `TRANSITION_CONFIGURE` y
-  `TRANSITION_ACTIVATE` explícitos en el launch queda creado pero inerte: todos los
-  procesos aparecen corriendo y no pasa nada.
-- **YAML de `slam_toolbox`:** la clave raíz debe coincidir exactamente con el nombre del
-  nodo (`slam_toolbox:`), y `ceres_loss_function` debe ser la cadena entrecomillada
-  `"None"`, no `None` suelto.
-- **Driver `ldlidar`:** el STL-19P necesita el perfil `LDLiDAR_LD19`, y hay que añadir
-  a mano `#include <pthread.h>` en `log_module.cpp` para que compile con GCC en Noble.
-- **`frame_id` del LiDAR** debe coincidir con el de la TF estática. Si no coincide,
-  `slam_toolbox` descarta todos los barridos y el mapa queda vacío aunque `/scan`
-  publique bien.
-- **TF duplicada.** Si el nodo puente y el EKF publican ambos `odom → base_link`, la
-  pose oscila entre las dos fuentes.
-
-### Energía y baterías
-
-- **El USB-C de la Pi 4 trabaja a 5.1 V.** Los periféricos suben la corriente, no la
-  tensión, y hunden el rail. Aislar los de alto consumo (arranque del motor del LiDAR,
-  picos de WiFi del ESP32) en un rail aparte.
-- **Celdas con capacidad implausible** (p. ej. 6800 mAh en formato 18650) son
-  falsificadas o recicladas.
-- **Corriente de reposo del BMS** drena de la celda más baja del stack y desbalancea
-  durante el almacenamiento. Desconectar a nivel de celda si se guarda más de dos
-  semanas.
-
-### Recuperación
-
-- **Corrupción del sistema de archivos** tras apagones bruscos: recuperable con
-  `fsck.ext4 -y /dev/mmcblk0p2` desde el shell de emergencia de BusyBox, al que se
-  llega quitando `quiet splash` de `cmdline.txt`.
-
----
-
-## 9. Trabajo pendiente
-
-- [ ] Integración `pymysql` desde la Pi con hilo dedicado y cola
-- [ ] Mecanismo de almacenamiento y despacho (plataforma rotatoria de 6
-      compartimientos + actuador lineal)
-- [ ] Planificación de trayectorias y navegación autónoma punto a punto
-- [ ] Monitoreo de batería vía ADC del ESP32 publicando `/battery_state`, con aviso
-      alrededor de 13 V antes del corte del BMS
-- [ ] Sustituir los encoders por unidades en cuadratura y reactivar el lazo cerrado
-- [ ] Integrar la brújula magnética en el EKF para acotar la deriva de yaw
-- [ ] Caracterización cuantitativa: error de localización, tiempo de entrega,
-      eficiencia de rutas, tasa de éxito en misiones completas
-- [ ] Resolver el escritorio remoto headless
-- [ ] `connection.autoconnect-priority` en el perfil WiFi para que la Pi prefiera la
-      red conocida al arrancar
-
----
-
-## 10. Herramientas de diagnóstico en uso
-
-```bash
-vcgencmd get_throttled           # limitación por voltaje o temperatura
-vcgencmd measure_volts core      # tensión del núcleo
-arp-scan --localnet              # descubrimiento de equipos en la red
-ros2 topic hz <tópico>           # frecuencia real de publicación
-ros2 lifecycle get <nodo>        # estado de un nodo gestionado
-ros2 run tf2_tools view_frames   # inspección del árbol de transformadas
-```
-
-Metodología de depuración: siempre en capas, **hardware → firmware → ROS 2**. No se
-sube de capa hasta descartar la inferior.
 
 ---
 
